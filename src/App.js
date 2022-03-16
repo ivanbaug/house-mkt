@@ -10,7 +10,6 @@ import SignUp from './pages/SignUp'
 function App() {
   return (
     <>
-      <h1>MyApp</h1>
       <BrowserRouter>
         <Routes>
           <Route path="/" exact element={<Explore />} />
