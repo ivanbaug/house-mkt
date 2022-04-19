@@ -1,7 +1,17 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { getAuth, onAuthStateChanged } from 'firebase/auth'
+import {
+  getStorage,
+  ref,
+  uploadBytesResumable,
+  getDownloadURL,
+} from 'firebase/storage'
+import { addDoc, collection, serverTimestamp } from 'firebase/firestore'
 import { useNavigate } from 'react-router-dom'
 import Spinner from '../components/Spinner'
+import { toast } from 'react-toastify'
+import { db } from '../firebase.config'
+import { v4 as uuidv4 } from 'uuid'
 
 const CreateListing = () => {
   const [geolocationEnabled, setGeolocationEnabled] = useState(true)
@@ -59,9 +69,129 @@ const CreateListing = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isMounted])
 
-  const onSubmit = (e) => {
+  const onSubmit = async (e) => {
     e.preventDefault()
-    console.log(formData)
+    setLoading(true)
+    if (discountedPrice >= regularPrice) {
+      setLoading(false)
+      toast.error('Discounted price needs to be less than regular price.')
+      return
+    }
+    if (images.length > 6) {
+      setLoading(false)
+      toast.error('Max. 6 images.')
+      return
+    }
+
+    let geolocation = {}
+    let location
+
+    if (geolocationEnabled) {
+      const response = await fetch(
+        `https://maps.googleapis.com/maps/api/geocode/json?address=${address}&key=${process.env.REACT_APP_GEO_KEY}`
+      )
+      const data = await response.json()
+      // console.log(data)
+      geolocation.lat = data.results[0]?.geometry.location.lat ?? 0
+      geolocation.lng = data.results[0]?.geometry.location.lng ?? 0
+      location =
+        data.status === 'ZERO_RESULTS'
+          ? undefined
+          : data.results[0]?.formatted_address
+
+      if (location === undefined || location.includes('undefined')) {
+        setLoading(false)
+        toast.error('Please enter a correct address')
+      }
+    } else {
+      geolocation.lat = latitude
+      geolocation.lng = longitude
+    }
+
+    // Store images
+
+    const storeImage = async (image) => {
+      return new Promise((resolve, reject) => {
+        const storage = getStorage()
+        const fileName = `${auth.currentUser.uid}-${image.name}-${uuidv4()}`
+        const storageRef = ref(storage, 'images/' + fileName)
+        const uploadTask = uploadBytesResumable(storageRef, image)
+
+        // Listen for state changes, errors, and completion of the upload.
+        uploadTask.on(
+          'state_changed',
+          (snapshot) => {
+            // Get task progress, including the number of bytes uploaded and the total number of bytes to be uploaded
+            const progress =
+              (snapshot.bytesTransferred / snapshot.totalBytes) * 100
+            console.log('Upload is ' + progress + '% done')
+            // eslint-disable-next-line default-case
+            switch (snapshot.state) {
+              case 'paused':
+                console.log('Upload is paused')
+                break
+              case 'running':
+                console.log('Upload is running')
+                break
+            }
+          },
+          (error) => {
+            // A full list of error codes is available at
+            // https://firebase.google.com/docs/storage/web/handle-errors
+            // eslint-disable-next-line default-case
+            switch (error.code) {
+              case 'storage/unauthorized':
+                console.error(error.code)
+                // User doesn't have permission to access the object
+                break
+              case 'storage/canceled':
+                console.error(error.code)
+                // User canceled the upload
+                break
+              case 'storage/unknown':
+                console.error(error.code)
+                // Unknown error occurred, inspect error.serverResponse
+                break
+            }
+            reject(error)
+          },
+          () => {
+            // Upload completed successfully, now we can get the download URL
+            getDownloadURL(uploadTask.snapshot.ref).then((downloadURL) => {
+              console.log('File available at', downloadURL)
+              resolve(downloadURL)
+            })
+          }
+        )
+      })
+    }
+
+    const imageUrls = await Promise.all(
+      [...images].map((image) => storeImage(image))
+    ).catch(() => {
+      setLoading(false)
+      toast.error('Images not uploaded.')
+    })
+
+    const formDataCopy = {
+      ...formData,
+      imageUrls,
+      geolocation,
+      timestamp: serverTimestamp(),
+    }
+
+    formDataCopy.location = address
+    delete formDataCopy.images
+    delete formDataCopy.address
+
+    !formDataCopy.offer && delete formDataCopy.discountedPrice
+    const docRef = await addDoc(collection(db, 'listings'), formDataCopy)
+    setLoading(false)
+    toast.success('Listing saved')
+    navigate(`/category/${formDataCopy.type}/${docRef.id}`)
+
+    console.log(imageUrls)
+    setLoading(false)
   }
   const onMutate = (e) => {
     // Handle boolean
